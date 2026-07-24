@@ -1,0 +1,78 @@
+# Builds https://github.com/owncloud/web-extensions/tree/main/packages/ai-llm-proxy
+# from source. The package has no workspace dependencies (its package.json lists
+# only devDependencies, no "workspace:*" entries), so a sparse, blobless clone of
+# just that subtree is enough to build it — the rest of the web-extensions
+# monorepo is never fetched.
+
+FROM docker.io/node:24.16.0-alpine3.24@sha256:21f403ab171f2dc89bad4dd69d7721bfd15f084ccb46cdd225f31f2bc59b5c9a AS build
+
+ARG GIT_REF="main"
+# Optional exact commit to build. When set (scheduled builds), pins the clone
+# to that commit and, because it is referenced in the fetch below, busts the
+# build cache whenever upstream main moves so the image stays fresh. Leave
+# empty to build GIT_REF (a branch or tag) as cloned.
+ARG GIT_SHA=""
+
+RUN apk add --no-cache git
+
+# No lockfile is committed for packages/ai-llm-proxy, so pinning pnpm's own
+# version buys no dependency-resolution reproducibility (typescript/vitest
+# still float to whatever matches their semver ranges regardless). Dependabot's
+# docker ecosystem can't track a version embedded in a RUN command anyway, so
+# an exact pin here would just rot silently — use latest instead, matching
+# upstream ai-llm-proxy's own Dockerfile.
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+WORKDIR /build
+
+# --no-cone sparse-checkout (unlike --cone) does not auto-include top-level
+# files, so the checkout contains ONLY packages/ai-llm-proxy — no root
+# pnpm-workspace.yaml/package.json/lockfile — meaning pnpm below can't (and
+# shouldn't) resolve a workspace root; it installs ai-llm-proxy standalone,
+# exactly like its own package.json/lockfile-free devDependency list intends.
+RUN git clone --filter=blob:none --no-checkout --depth 1 --branch "${GIT_REF}" \
+      https://github.com/owncloud/web-extensions.git . && \
+    git sparse-checkout init --no-cone && \
+    git sparse-checkout set /packages/ai-llm-proxy/ && \
+    if [ -n "${GIT_SHA}" ]; then \
+      git fetch --depth 1 origin "${GIT_SHA}" && \
+      git checkout --detach FETCH_HEAD; \
+    else \
+      git checkout "${GIT_REF}"; \
+    fi
+
+WORKDIR /build/packages/ai-llm-proxy
+
+RUN pnpm install --ignore-scripts && pnpm build
+
+
+FROM docker.io/node:24.16.0-alpine3.24@sha256:21f403ab171f2dc89bad4dd69d7721bfd15f084ccb46cdd225f31f2bc59b5c9a
+
+ARG REVISION=""
+
+LABEL maintainer="ownCloud GmbH <devops@owncloud.com>" \
+  org.opencontainers.image.title="ai-llm-proxy" \
+  org.opencontainers.image.vendor="ownCloud GmbH" \
+  org.opencontainers.image.authors="ownCloud GmbH" \
+  org.opencontainers.image.description="Server-side proxy for ownCloud Web's AI extensions — validates oCIS auth and forwards requests to the configured LLM" \
+  org.opencontainers.image.licenses="Apache-2.0" \
+  org.opencontainers.image.documentation="https://github.com/owncloud/web-extensions/tree/main/packages/ai-llm-proxy" \
+  org.opencontainers.image.url="https://hub.docker.com/r/owncloud/ai-llm-proxy" \
+  org.opencontainers.image.source="https://github.com/owncloud/web-extensions" \
+  org.opencontainers.image.revision="${REVISION}"
+
+# curl is used by the CI smoke test and is handy for manual troubleshooting.
+RUN apk upgrade --no-cache && \
+  apk add --no-cache curl && \
+  echo 'hosts: files dns' >| /etc/nsswitch.conf
+
+WORKDIR /app
+
+COPY --from=build /build/packages/ai-llm-proxy/dist ./dist
+
+# The base node image already ships a non-root "node" user at uid/gid 1000.
+USER node
+
+EXPOSE 3030/tcp
+
+ENTRYPOINT ["node", "dist/index.js"]

@@ -1,0 +1,111 @@
+name: Docker CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: 0 0 * * 0
+  workflow_dispatch:
+
+jobs:
+  lint:
+    uses: owncloud-docker/ubuntu/.github/workflows/lint-editorconfig.yml@master
+
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      full-sha: ${{ steps.resolve.outputs.full-sha }}
+      date: ${{ steps.resolve.outputs.date }}
+    steps:
+      - name: Resolve web-extensions main HEAD and date stamp
+        id: resolve
+        run: |
+          FULL_SHA=$(git ls-remote https://github.com/owncloud/web-extensions.git refs/heads/main | cut -f1)
+          if [ -z "${FULL_SHA}" ]; then
+            echo "Failed to resolve owncloud/web-extensions main HEAD"
+            exit 1
+          fi
+          {
+            echo "sha=${FULL_SHA:0:7}"
+            echo "full-sha=${FULL_SHA}"
+            echo "date=$(date -u +%Y%m%d)"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: [lint, prepare]
+    uses: owncloud-docker/ubuntu/.github/workflows/docker-build-native.yml@master
+    with:
+      docker-repo-name: owncloud/ai-llm-proxy
+      docker-tag: latest
+      docker-context: .
+      docker-file: Dockerfile.multiarch
+      docker-hub-username: ${{ vars.DOCKERHUB_USERNAME }}
+      # GIT_SHA pins the clone to the commit resolved above and busts the build
+      # cache whenever web-extensions' main branch moves, so the image is
+      # rebuilt with fresh source rather than reusing a stale cached layer.
+      docker-build-args: |
+        GIT_REF=main
+        GIT_SHA=${{ needs.prepare.outputs.full-sha }}
+        REVISION=${{ needs.prepare.outputs.full-sha }}
+      docker-cache-from: type=gha
+      docker-cache-to: type=gha,mode=max
+      trivy-ignore-files: .trivyignore
+      docker-extra-tags: |
+        ${{ needs.prepare.outputs.date }}
+        sha-${{ needs.prepare.outputs.sha }}
+      # ai-llm-proxy has no unauthenticated endpoint that returns HTTP 200, so
+      # the generic URL-polling smoke test doesn't fit. Instead, start the
+      # server for real (with placeholder env vars — no network calls happen
+      # for these two checks) and assert its actual request-handling
+      # behaviour: an OPTIONS preflight must return 204, and an unauthenticated
+      # POST must be rejected with 401.
+      smoke-test-cmd: |
+        export OCIS_URL=https://example.invalid LLM_ENDPOINT=https://example.invalid/v1
+        node dist/index.js &
+        pid=$!
+        ready=""
+        for i in $(seq 1 15); do
+          if curl -sf -o /dev/null -X OPTIONS http://127.0.0.1:3030/v1/chat/completions; then
+            ready=1
+            break
+          fi
+          sleep 1
+        done
+        if [ -z "${ready}" ]; then
+          echo "server did not become ready"
+          kill "${pid}" 2>/dev/null
+          exit 1
+        fi
+        opt_status=$(curl -s -o /dev/null -w '%{http_code}' -X OPTIONS http://127.0.0.1:3030/v1/chat/completions)
+        if [ "${opt_status}" != "204" ]; then
+          echo "expected 204 for OPTIONS preflight, got ${opt_status}"
+          kill "${pid}" 2>/dev/null
+          exit 1
+        fi
+        post_status=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:3030/v1/chat/completions)
+        if [ "${post_status}" != "401" ]; then
+          echo "expected 401 for unauthenticated POST, got ${post_status}"
+          kill "${pid}" 2>/dev/null
+          exit 1
+        fi
+        kill "${pid}" 2>/dev/null
+        echo "smoke test passed"
+      push: ${{ github.event_name != 'pull_request' }}
+    secrets:
+      docker-hub-password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  update-docker-hub-description:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    uses: owncloud-docker/ubuntu/.github/workflows/docker-hub-desc.yml@master
+    with:
+      docker-repo-name: owncloud/ai-llm-proxy
+      docker-repo-description: Docker image for the ownCloud Web ai-llm-proxy extension
+      docker-hub-username: ${{ vars.DOCKERHUB_USERNAME }}
+    secrets:
+      docker-hub-password: ${{ secrets.DOCKERHUB_TOKEN }}

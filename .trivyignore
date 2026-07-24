@@ -1,0 +1,3 @@
+# CVEs baked into the ai-llm-proxy image (Node/npm dependencies, Alpine packages) that
+# are unfixable from this repo — they require an upstream owncloud/web-extensions or
+# Alpine fix. Add entries only when a CVE is disclosed that upstream hasn't patched yet.
