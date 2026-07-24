@@ -66,6 +66,16 @@ RUN apk upgrade --no-cache && \
   apk add --no-cache curl && \
   echo 'hosts: files dns' >| /etc/nsswitch.conf
 
+# The base node image bundles npm/corepack/yarn, none of which this image
+# invokes at runtime (only the "node" binary runs dist/index.js), but which do
+# carry their own vendored, periodically-CVE'd dependencies (tar, undici,
+# sigstore, brace-expansion, ...). Removing them shrinks the actual
+# vulnerability surface instead of just suppressing the Trivy scan for CVEs in
+# code that never runs.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+  /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/corepack.js \
+  /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-v*
+
 WORKDIR /app
 
 COPY --from=build /build/packages/ai-llm-proxy/dist ./dist
