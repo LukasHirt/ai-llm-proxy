@@ -113,16 +113,10 @@ docker buildx build \
 The GitHub Actions workflow (`.github/workflows/main.yml`) builds and validates
 the image on every push, pull request, weekly schedule, and manual dispatch:
 
-1. **Build** — multi-arch image (`linux/amd64`, `linux/arm64`) built with
-   BuildKit and GHA layer cache.
-2. **Trivy scan** — scans for HIGH/CRITICAL CVEs; accepted exceptions live in
-   `.trivyignore`.
-3. **Smoke test** — starts the container for real and asserts its actual
-   request-handling behaviour: an `OPTIONS` preflight to `/v1/chat/completions`
-   must return `204`, and an unauthenticated `POST` to the same path must
-   return `401`.
-4. **Publish** — pushes to Docker Hub with `latest`, `YYYYMMDD`, and
-   `sha-<short>` tags (skipped on pull requests).
+1. **Build** — multi-arch image (`linux/amd64`, `linux/arm64`) built with BuildKit and GHA layer cache.
+2. **Trivy scan** — scans for HIGH/CRITICAL CVEs; accepted exceptions live in `.trivyignore`.
+3. **Smoke test** — starts the container for real and asserts its actual request-handling behaviour: an `OPTIONS` preflight to `/v1/chat/completions` must return `204`, and an unauthenticated `POST` to the same path must return `401`.
+4. **Publish** — pushes to Docker Hub with `latest`, `YYYYMMDD`, and `sha-<short>` tags (skipped on pull requests).
 
 ## Community & Support
 
